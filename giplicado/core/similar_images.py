@@ -9,13 +9,12 @@ hashes casi idénticos. La distancia de Hamming (bits distintos) mide la diferen
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 import numpy as np
 from PIL import Image, ImageOps
 
-from .scanner import Cancelled, DuplicateGroup, FileInfo, UnionFind, _noop, ProgressCb
+from .scanner import Cancelled, DuplicateGroup, FileInfo, UnionFind, _noop, ProgressCb, compute_all
 
 try:  # soporte opcional HEIC/HEIF (fotos de iPhone)
     from pillow_heif import register_heif_opener
@@ -48,7 +47,7 @@ def image_phash(fi: FileInfo) -> tuple[int, int, int]:
         return phash(img), w, h
 
 
-def _popcount(x: np.ndarray) -> np.ndarray:
+def popcount(x: np.ndarray) -> np.ndarray:
     if hasattr(np, "bitwise_count"):
         return np.bitwise_count(x)
     return np.unpackbits(x.view(np.uint8), axis=-1).reshape(*x.shape, 64).sum(-1)
@@ -61,28 +60,19 @@ def find_similar_images(
     progress: ProgressCb = _noop,
     errors: list[str] | None = None,
     workers: int = 8,
+    cache=None,
 ) -> list[DuplicateGroup]:
     errors = errors if errors is not None else []
     photos = [f for f in files if f.category == "foto"]
-
+    done = compute_all(photos, "phash", image_phash, cache, workers, "Analizando fotos",
+                       is_cancelled, progress, errors)
     ok: list[FileInfo] = []
     hashes: list[int] = []
-    with ThreadPoolExecutor(workers) as pool:
-        futures = [(fi, pool.submit(image_phash, fi)) for fi in photos]
-        for n, (fi, fut) in enumerate(futures, 1):
-            if is_cancelled():
-                for _, f in futures:
-                    f.cancel()
-                raise Cancelled
-            try:
-                h, w, hgt = fut.result()
-                fi.quality = w * hgt
-                fi.note = f"{w}×{hgt}"
-                ok.append(fi)
-                hashes.append(h)
-            except Exception as e:  # noqa: BLE001 - formato no soportado, archivo dañado…
-                errors.append(f"{fi.path}: {e}")
-            progress("Analizando fotos", n, len(photos))
+    for fi, (h, w, hgt) in done:
+        fi.quality = w * hgt
+        fi.note = f"{w}×{hgt}"
+        ok.append(fi)
+        hashes.append(h)
 
     if len(ok) < 2:
         return []
@@ -95,7 +85,7 @@ def find_similar_images(
         if is_cancelled():
             raise Cancelled
         chunk = arr[start:start + block]
-        dist = _popcount(chunk[:, None] ^ arr[None, :])
+        dist = popcount(chunk[:, None] ^ arr[None, :])
         ii, jj = np.nonzero(dist <= max_distance)
         for i, j in zip(ii + start, jj):
             if i < j:

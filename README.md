@@ -12,6 +12,7 @@ cada archivo antes de eliminarlo o renombrarlo.
 | Qt Multimedia (incluido en PySide6, motor FFmpeg) | Reproductor de audio y video |
 | hashlib BLAKE2b (incluido en Python) | Duplicados exactos |
 | NumPy | Fotos parecidas (hash perceptual pHash, compatible con ImageHash) |
+| PyAV (FFmpeg, LGPL) | Videos parecidos (lectura de cuadros) |
 | Chromaprint `fpcalc` (LGPL) | Misma canción en otro formato (huella acústica) |
 | Pillow | Lectura de fotos y fecha EXIF |
 | Send2Trash | Enviar a la Papelera de forma segura |
@@ -33,9 +34,17 @@ python main.py
 | Contenido idéntico | Copias exactas byte a byte con cualquier nombre | — |
 | Fotos parecidas | La misma foto redimensionada, recomprimida (WhatsApp), en otro formato | Tolerancia 0–16 (recomendado 6) |
 | Misma canción | MP3 / FLAC / M4A / WAV… de la misma grabación | Coincidencia mínima % (recomendado 80) |
+| Videos parecidos | El mismo video en otra resolución, formato o calidad | Tolerancia 0–24 (recomendado 10) |
 
 En los modos "parecidos" la app propone conservar la copia de **mejor calidad**
 (más resolución o más kbps). Revisa siempre en el reproductor antes de borrar.
+
+## Caché de análisis
+Las huellas calculadas se guardan en `%LOCALAPPDATA%\Giplicado\cache.db`; repetir una búsqueda
+solo analiza los archivos nuevos o modificados. Se puede borrar en *Herramientas → Borrar caché*.
+
+## Tema
+*Ver → Tema*: según Windows, claro u oscuro.
 
 ## Reproductor
 Panel a la derecha en ambas pestañas: muestra las fotos y reproduce el audio y el video
@@ -48,7 +57,7 @@ mayúsculas · numeración · detección de conflictos · edición manual (doble
 
 ## Pruebas
 ```
-python -m unittest tests/test_core.py tests/test_similar.py tests/test_updater.py -v
+python -m unittest tests/test_core.py tests/test_similar.py tests/test_updater.py tests/test_v03.py -v
 ```
 
 ## Crear el ejecutable (.exe)

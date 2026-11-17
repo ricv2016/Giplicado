@@ -2,13 +2,16 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 
 from . import __version__
 from .config import GITHUB_REPO
+from .core.cache import shared_cache
+from .core.scanner import human_size
 from .ui.duplicates_tab import DuplicatesTab
 from .ui.rename_tab import RenameTab
+from .ui.theme import THEMES, apply_theme, current_theme, follow_system
 from .ui.update_dialog import UpdateManager
 
 
@@ -25,6 +28,23 @@ class MainWindow(QMainWindow):
         self.dup.send_to_rename.connect(lambda paths: (self.ren.add_paths(paths),
                                                        tabs.setCurrentWidget(self.ren)))
         self.setCentralWidget(tabs)
+
+        # --- Menú Ver: tema ---
+        view = self.menuBar().addMenu("Ver")
+        theme_menu = view.addMenu("Tema")
+        group = QActionGroup(self)
+        for key, label in THEMES:
+            act = QAction(label, self, checkable=True)
+            act.setChecked(current_theme() == key)
+            act.triggered.connect(lambda _=False, k=key: apply_theme(QApplication.instance(), k))
+            group.addAction(act)
+            theme_menu.addAction(act)
+
+        # --- Menú Herramientas: caché ---
+        tools = self.menuBar().addMenu("Herramientas")
+        act_cache = QAction("Borrar caché de análisis…", self)
+        act_cache.triggered.connect(self.clear_cache)
+        tools.addAction(act_cache)
 
         # --- Menú Ayuda / actualizaciones ---
         self.updates = UpdateManager(self)
@@ -45,6 +65,19 @@ class MainWindow(QMainWindow):
             menu.addSeparator() if a is None else menu.addAction(a)
         self.updates.check_on_startup()
 
+    def clear_cache(self):
+        cache = shared_cache()
+        if cache is None:
+            QMessageBox.information(self, "Caché", "La caché no está disponible.")
+            return
+        n, size = cache.stats()
+        msg = (f"La caché guarda las huellas de {n} archivo(s) ({human_size(size)}) para que "
+               "las búsquedas repetidas sean casi instantáneas.\n\n"
+               "¿Borrarla? Tus archivos no se tocan; solo se volverán a analizar la próxima vez.")
+        if QMessageBox.question(self, "Borrar caché", msg) == QMessageBox.Yes:
+            cache.clear()
+            QMessageBox.information(self, "Caché", "Caché borrada.")
+
 
 def main():
     if sys.platform == "win32":  # ícono propio en la barra de tareas
@@ -54,6 +87,8 @@ def main():
     app.setStyle("Fusion")
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     app.setWindowIcon(QIcon(str(base / "assets" / "giplicado.png")))
+    apply_theme(app)
+    follow_system(app)
     w = MainWindow()
     w.show()
     sys.exit(app.exec())

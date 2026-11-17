@@ -11,13 +11,12 @@ import os
 import shutil
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
-from .scanner import Cancelled, DuplicateGroup, FileInfo, UnionFind, _noop, ProgressCb
+from .scanner import Cancelled, DuplicateGroup, FileInfo, UnionFind, _noop, ProgressCb, compute_all
 
 FP_SECONDS = 120          # segundos analizados por canción
 MAX_OFFSET = 30           # desfase máximo probado (~0.12 s por elemento → ±3.7 s)
@@ -76,6 +75,7 @@ def find_same_audio(
     progress: ProgressCb = _noop,
     errors: list[str] | None = None,
     workers: int = 4,
+    cache=None,
 ) -> list[DuplicateGroup]:
     errors = errors if errors is not None else []
     fpcalc = fpcalc or find_fpcalc()
@@ -84,24 +84,15 @@ def find_same_audio(
 
     # También se analizan videos si se pidieron: detecta el mismo audio en un clip
     items = [f for f in files if f.category in ("audio", "video")]
+    done = compute_all(items, "chromaprint", lambda fi: fingerprint(fi.path, fpcalc), cache,
+                       workers, "Escuchando audio", is_cancelled, progress, errors)
     ok: list[tuple[FileInfo, float, np.ndarray]] = []
-    with ThreadPoolExecutor(workers) as pool:
-        futures = [(fi, pool.submit(fingerprint, fi.path, fpcalc)) for fi in items]
-        for n, (fi, fut) in enumerate(futures, 1):
-            if is_cancelled():
-                for _, f in futures:
-                    f.cancel()
-                raise Cancelled
-            try:
-                dur, fp = fut.result()
-                if len(fp) >= 10:
-                    kbps = fi.size * 8 / 1000 / dur if dur else 0
-                    fi.quality = kbps
-                    fi.note = f"{int(dur // 60)}:{int(dur % 60):02d} · ~{kbps:.0f} kbps"
-                    ok.append((fi, dur, fp))
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"{fi.path}: {e}")
-            progress("Escuchando audio", n, len(items))
+    for fi, (dur, fp) in done:
+        if len(fp) >= 10:
+            kbps = fi.size * 8 / 1000 / dur if dur else 0
+            fi.quality = kbps
+            fi.note = f"{int(dur // 60)}:{int(dur % 60):02d} · ~{kbps:.0f} kbps"
+            ok.append((fi, dur, fp))
 
     # Solo se comparan pistas de duración parecida (ventana deslizante por duración)
     ok.sort(key=lambda t: t[1])

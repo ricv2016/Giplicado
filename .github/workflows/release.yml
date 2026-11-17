@@ -42,7 +42,7 @@ jobs:
           Copy-Item fpcalc_tmp/*/fpcalc.exe tools/
 
       - name: Pruebas
-        run: python -m unittest tests/test_core.py tests/test_similar.py tests/test_updater.py -v
+        run: python -m unittest tests/test_core.py tests/test_similar.py tests/test_updater.py tests/test_v03.py -v
 
       - name: Compilar ejecutable (PyInstaller)
         run: python -m PyInstaller giplicado.spec --noconfirm

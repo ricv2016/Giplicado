@@ -98,6 +98,64 @@ def _noop(*_a) -> None:
     pass
 
 
+def compute_all(
+    files: list[FileInfo],
+    kind: str,
+    compute: Callable[[FileInfo], object],
+    cache=None,
+    workers: int = 4,
+    phase: str = "Analizando",
+    is_cancelled: Callable[[], bool] = lambda: False,
+    progress: ProgressCb = _noop,
+    errors: list[str] | None = None,
+) -> list[tuple[FileInfo, object]]:
+    """Calcula `compute(fi)` para cada archivo usando la caché cuando es posible.
+
+    Devuelve [(archivo, valor)] en el mismo orden, omitiendo los que fallaron.
+    Los resultados nuevos se guardan en la caché por lotes (sobreviven a una cancelación).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    errors = errors if errors is not None else []
+    results: dict[int, object] = {}
+    pending: list[int] = []
+    for i, fi in enumerate(files):
+        v = cache.get(fi.path, kind, fi.size, fi.mtime) if cache else None
+        if v is not None:
+            results[i] = v
+        else:
+            pending.append(i)
+    done = len(results)
+    total = len(files)
+    progress(phase, done, total)
+
+    batch: list[tuple[Path, int, float, object]] = []
+    with ThreadPoolExecutor(max(1, workers)) as pool:
+        futures = [(i, pool.submit(compute, files[i])) for i in pending]
+        try:
+            for i, fut in futures:
+                if is_cancelled():
+                    raise Cancelled
+                fi = files[i]
+                try:
+                    v = fut.result()
+                    results[i] = v
+                    batch.append((fi.path, fi.size, fi.mtime, v))
+                except Exception as e:  # noqa: BLE001 - archivo dañado, formato no soportado…
+                    errors.append(f"{fi.path}: {e}")
+                done += 1
+                progress(phase, done, total)
+                if cache and len(batch) >= 100:
+                    cache.put_many(kind, batch)
+                    batch = []
+        finally:
+            for _, f in futures:
+                f.cancel()
+            if cache:
+                cache.put_many(kind, batch)
+    return [(files[i], results[i]) for i in range(total) if i in results]
+
+
 def _partial_hash(path: Path, size: int) -> str:
     h = hashlib.blake2b(digest_size=16)
     with open(path, "rb") as f:
@@ -157,10 +215,11 @@ def find_duplicates(
     is_cancelled: Callable[[], bool] = lambda: False,
     progress: ProgressCb = _noop,
     errors: list[str] | None = None,
+    cache=None,
 ) -> list[DuplicateGroup]:
     categories = categories or set(CATEGORIES)
     files = collect_files(roots, categories, min_size, is_cancelled, progress)
-    return exact_duplicates(files, is_cancelled, progress, errors)
+    return exact_duplicates(files, is_cancelled, progress, errors, cache)
 
 
 def exact_duplicates(
@@ -168,6 +227,7 @@ def exact_duplicates(
     is_cancelled: Callable[[], bool] = lambda: False,
     progress: ProgressCb = _noop,
     errors: list[str] | None = None,
+    cache=None,
 ) -> list[DuplicateGroup]:
     errors = errors if errors is not None else []
 
@@ -194,19 +254,18 @@ def exact_duplicates(
             progress("Comparación rápida", done, total)
         stage2.extend(b for b in buckets.values() if len(b) > 1)
 
-    # Fase 3: hash completo
-    total = sum(len(g) for g in stage2)
-    done = 0
+    # Fase 3: hash completo (con caché)
+    flat = [fi for g in stage2 for fi in g]
+    hashed = compute_all(flat, "blake2b", lambda fi: _full_hash(fi.path, is_cancelled), cache,
+                         workers=2, phase="Verificando contenido", is_cancelled=is_cancelled,
+                         progress=progress, errors=errors)
+    digest_of = {id(fi): h for fi, h in hashed}
     result: list[DuplicateGroup] = []
     for group in stage2:
         buckets = {}
         for fi in group:
-            try:
-                buckets.setdefault(_full_hash(fi.path, is_cancelled), []).append(fi)
-            except OSError as e:
-                errors.append(f"{fi.path}: {e}")
-            done += 1
-            progress("Verificando contenido", done, total)
+            if id(fi) in digest_of:
+                buckets.setdefault(digest_of[id(fi)], []).append(fi)
         for digest, b in buckets.items():
             if len(b) > 1:
                 b.sort(key=lambda x: (x.mtime, len(str(x.path))))

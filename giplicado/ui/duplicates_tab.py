@@ -16,7 +16,9 @@ from send2trash import send2trash
 
 from ..core.audio_match import find_fpcalc, find_same_audio
 from ..core.scanner import Cancelled, DuplicateGroup, FileInfo, collect_files, exact_duplicates, human_size
+from ..core.cache import shared_cache
 from ..core.similar_images import find_similar_images
+from ..core.similar_videos import find_similar_videos
 from .compare_dialog import CompareDialog
 from .media_player import MediaPreview
 
@@ -26,6 +28,7 @@ MODES = [
     ("exacto", "Contenido idéntico (byte a byte)"),
     ("foto", "Fotos parecidas (redimensionadas, recomprimidas, otro formato)"),
     ("audio", "Misma canción en otro formato o calidad"),
+    ("video", "Videos parecidos (otra resolución, formato o calidad)"),
 ]
 KEEP = [
     ("calidad", "Conservar: mejor calidad"),
@@ -53,12 +56,14 @@ class ScanThread(QThread):
     def run(self):
         errors: list[str] = []
         kw = dict(is_cancelled=lambda: self._cancel,
-                  progress=lambda *a: self.progress.emit(*a), errors=errors)
+                  progress=lambda *a: self.progress.emit(*a), errors=errors, cache=shared_cache())
         try:
             files = collect_files(self.roots, self.categories, self.min_size,
                                   kw["is_cancelled"], kw["progress"])
             if self.mode == "foto":
                 groups = find_similar_images(files, max_distance=self.sensitivity, **kw)
+            elif self.mode == "video":
+                groups = find_similar_videos(files, max_distance=self.sensitivity, **kw)
             elif self.mode == "audio":
                 groups = find_same_audio(files, min_similarity=self.sensitivity / 100, **kw)
             else:
@@ -216,6 +221,11 @@ class DuplicatesTab(QWidget):
             self.sens.setRange(0, 16)
             self.sens.setValue(6)
             self.sens.setSuffix("")
+        elif m == "video":
+            self.sens_lbl.setText("Tolerancia (0 = idénticos, 20 = muy flexible):")
+            self.sens.setRange(0, 24)
+            self.sens.setValue(10)
+            self.sens.setSuffix("")
         elif m == "audio":
             self.sens_lbl.setText("Coincidencia mínima:")
             self.sens.setRange(60, 99)
@@ -225,7 +235,7 @@ class DuplicatesTab(QWidget):
         self.sens.setVisible(m != "exacto")
         self.sens_lbl.setVisible(m != "exacto")
         allowed = {"exacto": {"foto", "audio", "video"}, "foto": {"foto"},
-                   "audio": {"audio", "video"}}[m]
+                   "audio": {"audio", "video"}, "video": {"video"}}[m]
         for k, c in self.chk.items():
             c.setEnabled(k in allowed)
             if m != "exacto":
@@ -304,7 +314,7 @@ class DuplicatesTab(QWidget):
 
     def populate(self):
         titles = {"exacto": "copias idénticas", "foto_parecida": "fotos parecidas",
-                  "audio_igual": "versiones de la misma canción"}
+                  "audio_igual": "versiones de la misma canción", "video_parecido": "videos parecidos"}
         self.tree.blockSignals(True)
         self.tree.clear()
         for n, g in enumerate(self.groups, 1):
