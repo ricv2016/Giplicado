@@ -17,6 +17,7 @@ from send2trash import send2trash
 from ..core.audio_match import find_fpcalc, find_same_audio
 from ..core.scanner import Cancelled, DuplicateGroup, FileInfo, collect_files, exact_duplicates, human_size
 from ..core.similar_images import find_similar_images
+from .compare_dialog import CompareDialog
 from .media_player import MediaPreview
 
 ROLE_INFO = Qt.UserRole + 1
@@ -172,6 +173,9 @@ class DuplicatesTab(QWidget):
         b_auto.clicked.connect(self.auto_mark)
         b_none = QPushButton("Desmarcar todo")
         b_none.clicked.connect(lambda: self.set_all_checks(False))
+        b_cmp = QPushButton("⇆ Comparar lado a lado")
+        b_cmp.setToolTip("Selecciona 2 archivos (Ctrl+clic) o un grupo")
+        b_cmp.clicked.connect(self.compare)
         b_open = QPushButton("Abrir ubicación")
         b_open.clicked.connect(self.reveal_current)
         b_ren = QPushButton("Marcados → Renombrar")
@@ -184,7 +188,7 @@ class DuplicatesTab(QWidget):
         self.lbl_marked = QLabel("")
 
         acts = QHBoxLayout()
-        for w in (self.keep, b_auto, b_none, b_open, b_ren):
+        for w in (self.keep, b_auto, b_none, b_cmp, b_open, b_ren):
             acts.addWidget(w)
         acts.addStretch()
         acts.addWidget(self.lbl_marked)
@@ -458,6 +462,22 @@ class DuplicatesTab(QWidget):
             self.player.load(item.child(0).data(0, ROLE_INFO).path, item.child(0).data(0, ROLE_INFO).note)
         else:
             self.player.clear()
+
+    def compare(self):
+        sel = [it for it in self.tree.selectedItems() if it.data(0, ROLE_INFO)]
+        if len(sel) != 2:
+            cur = self.tree.currentItem()
+            top = cur if cur is not None and cur.parent() is None else (cur.parent() if cur else None)
+            if top is None or top.childCount() < 2:
+                QMessageBox.information(self, "Comparar",
+                                        "Selecciona dos archivos (Ctrl+clic) o un grupo para comparar.")
+                return
+            first = cur if cur is not None and cur.parent() is top else top.child(0)
+            other = next(top.child(j) for j in range(top.childCount()) if top.child(j) is not first)
+            sel = [first, other]
+        self.player.release()
+        CompareDialog(self, sel[0], sel[1], ROLE_INFO).exec()
+        self.update_marked_label()
 
     def open_item(self, item, _col=0):
         fi = item.data(0, ROLE_INFO)
