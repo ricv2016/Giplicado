@@ -1,0 +1,68 @@
+# Publica una nueva versión de Giplicado.
+# Se activa al subir una etiqueta:   git tag v0.2.0   y   git push origin v0.2.0
+# Compila el .exe, arma el instalador y crea el Release que la app usa para actualizarse.
+name: Publicar versión
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Verificar que la etiqueta coincide con la versión del código
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $code = python -c "import giplicado; print(giplicado.__version__)"
+          if ($tag -ne $code) { throw "La etiqueta v$tag no coincide con __version__ = $code (giplicado/__init__.py)" }
+          "VERSION=$tag" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Descargar Chromaprint (fpcalc)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip -OutFile fpcalc.zip
+          Expand-Archive fpcalc.zip -DestinationPath fpcalc_tmp
+          New-Item -ItemType Directory -Force tools | Out-Null
+          Copy-Item fpcalc_tmp/*/fpcalc.exe tools/
+
+      - name: Pruebas
+        run: python -m unittest tests/test_core.py tests/test_similar.py tests/test_updater.py -v
+
+      - name: Compilar ejecutable (PyInstaller)
+        run: python -m PyInstaller giplicado.spec --noconfirm
+
+      - name: Crear instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" | Select-Object -First 1
+          & $iscc.FullName "/DAppVersion=$env:VERSION" installer\giplicado.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falló" }
+          $exe = "dist\Giplicado-$env:VERSION-instalador.exe"
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  Giplicado-$env:VERSION-instalador.exe" | Out-File -Encoding ascii -NoNewline "$exe.sha256"
+
+      - name: Publicar Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Giplicado ${{ env.VERSION }}
+          generate_release_notes: true
+          files: |
+            dist/Giplicado-${{ env.VERSION }}-instalador.exe
+            dist/Giplicado-${{ env.VERSION }}-instalador.exe.sha256
